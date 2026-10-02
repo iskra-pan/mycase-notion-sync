@@ -19,10 +19,12 @@ import logging
 from datetime import datetime, timezone
 
 from app import mycase_client, notion_client
+from app.config import settings
 from app.field_mapping import (
     ALL_FIELDS,
     CUSTOM_FIELDS,
     MATTER_ID_PROPERTY,
+    MATTER_ID_PROPERTY_TYPE,
     NOTION_TYPE_TO_MYCASE_CUSTOM_FIELD_TYPE,
     STANDARD_FIELDS,
     FieldKind,
@@ -97,9 +99,17 @@ def _create_mycase_matter_for_page(page_id: str, notion_edited_at: str, plain_va
         "mycase_edited_at": None,
     })
 
-    # Write the Matter ID back onto the Notion page, per the brief.
+    # Write the Matter ID/link back onto the Notion page, per the brief.
+    # TODO CONFIRM: MyCase's actual web URL pattern for a matter, once known
+    # - set MYCASE_MATTER_URL_TEMPLATE so this becomes a real clickable link
+    # instead of just the bare ID.
+    matter_url = (
+        settings.mycase_matter_url_template.format(matter_id=matter_id)
+        if settings.mycase_matter_url_template
+        else matter_id
+    )
     notion_client.update_page_properties(page_id, {
-        MATTER_ID_PROPERTY: plain_to_notion_value("rich_text", matter_id),
+        MATTER_ID_PROPERTY: plain_to_notion_value(MATTER_ID_PROPERTY_TYPE, matter_url),
     })
     logger.info("Notion page %s -> created MyCase matter %s", page_id, matter_id)
     return "created"

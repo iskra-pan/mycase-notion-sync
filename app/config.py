@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     # will raise a clear error rather than silently calling the wrong host.
     mycase_api_base: str = ""
 
+    # Optional: MyCase's web-app URL pattern for a matter, e.g.
+    # "https://<firm>.mycase.com/cases/{matter_id}" - TODO CONFIRM the real
+    # pattern. Leave blank to write the bare matter ID into Notion's
+    # "MyCase Link" property instead of a real clickable link.
+    mycase_matter_url_template: str = ""
+
     # --- Shared secret for calling the internal token-refresh endpoint
     # (e.g. from Cloud Scheduler). Not the same as an OAuth secret. ---
     internal_task_secret: str = "change-me"
