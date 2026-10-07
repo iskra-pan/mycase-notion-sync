@@ -18,7 +18,7 @@ Conflict rule per field, from field_mapping.SourceOfTruth:
 import logging
 from datetime import datetime, timezone
 
-from app import mycase_client, notion_client
+from app import mycase_client, notion_client, notion_users
 from app.config import settings
 from app.field_mapping import (
     ALL_FIELDS,
@@ -169,6 +169,12 @@ def sync_changed_mycase_matters() -> dict:
             if f.source_of_truth == SourceOfTruth.NOTION:
                 continue
             value = m.get(f.mycase_field)
+            if f.notion_type == "people":
+                # Special case: MyCase gives names/emails, Notion needs
+                # real user IDs - resolve by email first (see
+                # notion_users.py), never write raw names into a people
+                # property.
+                value = notion_users.resolve_staff_to_notion_people(value)
             try:
                 notion_updates[f.notion_property] = plain_to_notion_value(f.notion_type, value)
             except ValueError:

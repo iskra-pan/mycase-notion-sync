@@ -83,6 +83,24 @@ def get_database_schema() -> dict:
     return {name: prop["type"] for name, prop in data["properties"].items()}
 
 
+def list_workspace_users() -> list[dict]:
+    """All members of the Notion workspace (GET /v1/users, paginated).
+    Used to resolve a person's email to their Notion user ID - see
+    app/notion_users.py."""
+    users: list[dict] = []
+    params = {"page_size": 100}
+    with httpx.Client(timeout=15) as client:
+        while True:
+            resp = client.get(f"{BASE_URL}/users", headers=_headers(), params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            users.extend(data["results"])
+            if not data.get("has_more"):
+                break
+            params["start_cursor"] = data["next_cursor"]
+    return users
+
+
 def add_database_property(name: str, notion_type: str) -> None:
     """Add a new column to the Notion database (used when a MyCase custom
     field has no Notion counterpart yet)."""

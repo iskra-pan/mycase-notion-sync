@@ -70,7 +70,12 @@ STANDARD_FIELDS: list[FieldMapping] = [
                  "Display only - no write-back (would need MyCase user ID resolution)."),
     FieldMapping("Originating attorney", "originating_attorney", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
                  "Display only - no write-back."),
-    # "Staff" intentionally excluded - see bottom of file.
+    # Real Notion "people" property - resolved by email via
+    # app/notion_users.py, never guessed from a name. Staff with no email
+    # from MyCase, or no matching Notion account, are skipped and logged
+    # rather than written incorrectly.
+    FieldMapping("Staff", "staff", FieldKind.STANDARD, "people", SourceOfTruth.MYCASE,
+                 "Multiple staff members supported. Matched to Notion users by email only."),
     FieldMapping("Created", "created_info", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
                  "MyCase's own creation date/creator as data - not Notion's system creation metadata."),
     FieldMapping("Description", "description", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
@@ -157,18 +162,15 @@ MATTER_ID_PROPERTY_TYPE = "url"
 
 # --- Deliberately excluded from sync, with reasons (nothing silently dropped) ---
 #
-# "Staff" (Notion "people" type) - the firm's own note: "Map MyCase staff
-# IDs/emails to Notion user IDs... do not guess ambiguous name matches,"
-# with a documented fallback: "If reliable Notion-user mapping is not
-# possible, use the same Staff field as Text to display all MyCase names."
-# Neither is built yet - this needs a decision:
-#   (a) build the MyCase-user <-> Notion-user mapping (more correct, more
-#       work), or
-#   (b) convert "Staff" from Person to Text in Notion and sync it as a
-#       plain display string (the firm's own documented fallback, much
-#       simpler, but Staff would no longer be an actual Notion "people"
-#       field - mentions, filtering by person, etc. stop working on it).
-# Excluded until that decision is made.
+# "Staff" is now wired up (see app/notion_users.py) - matched to Notion
+# users by email, never by guessing names. One real dependency remains:
+# this only works once MyCase's API is confirmed to actually include an
+# email per staff member (see mycase_client.py). If it turns out MyCase
+# only gives names, per-person matching isn't safely possible and the
+# firm's own documented fallback applies instead: convert "Staff" from a
+# Person property to a Text property in Notion, and sync it as a plain
+# display string of names (one-line change in notion_type + the
+# resolver is skipped entirely for a Text-typed Staff).
 
 # Notion property type -> best-fit MyCase custom field type, used only when
 # auto-creating a MyCase custom field for a brand-new, unmapped Notion

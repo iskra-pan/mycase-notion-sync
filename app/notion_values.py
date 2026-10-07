@@ -62,9 +62,9 @@ def plain_to_notion_value(notion_type: str, value: Any) -> dict:
     if notion_type == "date":
         return {"date": {"start": value} if value else None}
     if notion_type == "people":
-        # Writing "people" back requires Notion user IDs, not names - MyCase
-        # attorney/case-manager names would need to be resolved to Notion
-        # user IDs first (e.g. a small lookup table by name/email). Left as
-        # a follow-up if MyCase -> Notion writes to this field are needed.
-        raise ValueError("Writing a 'people' property requires a name -> Notion user ID lookup - not implemented yet")
+        # `value` must already be a list of resolved Notion user IDs here -
+        # see app/notion_users.py for MyCase-staff -> Notion-user
+        # resolution (matched by email, never guessed from a name).
+        ids = value or []
+        return {"people": [{"id": uid} for uid in ids]}
     raise ValueError(f"Unsupported notion_type for write: {notion_type}")
