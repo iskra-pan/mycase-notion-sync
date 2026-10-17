@@ -15,10 +15,9 @@ class Settings(BaseSettings):
     mycase_redirect_uri: str = "http://localhost:8080/auth/mycase/callback"
 
     mycase_auth_base: str = "https://auth.mycase.com"
-    # TODO CONFIRM: the actual data-API host - auth.mycase.com is documented
-    # as the OAuth host only. Leave blank until confirmed; mycase_client.py
-    # will raise a clear error rather than silently calling the wrong host.
-    mycase_api_base: str = ""
+    # Confirmed (2026-10-17) against the firm's live docs - auth.mycase.com
+    # is the OAuth host only; data calls go here.
+    mycase_api_base: str = "https://external-integrations.mycase.com/v1"
 
     # Optional: MyCase's web-app URL pattern for a matter, e.g.
     # "https://<firm>.mycase.com/cases/{matter_id}" - TODO CONFIRM the real

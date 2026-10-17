@@ -14,11 +14,12 @@ MyCase matter using whatever is typed in Notion at creation time, but
 MyCase - only MyCase -> Notion flows. If that's not the intended
 workflow for some of these fields, change their source_of_truth.
 
-`mycase_field` values for STANDARD_FIELDS are placeholder snake_case
-keys - TODO CONFIRM against MyCase's real Case API schema (see
-mycase_client.py). `mycase_field` values for CUSTOM_FIELDS reuse the
-Notion property name, on the assumption the firm named the MyCase
-custom field the same way - also TODO CONFIRM.
+`mycase_field` values for STANDARD_FIELDS are confirmed real MyCase Case
+API keys (2026-10-17, against the firm's live docs) - see
+mycase_client.py for the confirmed request/response shapes. `mycase_field`
+values for CUSTOM_FIELDS are resolved by name via
+mycase_client.resolve_custom_field_id() - still assumes the firm named
+the MyCase custom field the same as the Notion column; worth a spot-check.
 """
 from dataclasses import dataclass
 from enum import Enum
@@ -43,53 +44,75 @@ class FieldMapping:
     notion_type: str       # title | rich_text | email | phone_number | date | select | status | number | checkbox | people | url
     source_of_truth: SourceOfTruth = SourceOfTruth.LAST_WRITE_WINS
     note: str = ""         # the firm's own handling note for this field, kept alongside the code
+    # Non-empty for fields that AREN'T a simple `case[mycase_field]` lookup -
+    # these are derived from nested/relational data (clients[], staff[],
+    # office{}) and need special-case logic in sync_engine.py. See the
+    # DERIVED_FIELD_NOTES block below for what each value means.
+    derived: str = ""
 
 
 # =====================================================================
 # Case Overview and Case Information  ->  MyCase's built-in case fields
 # =====================================================================
+# Keys below are confirmed real (2026-10-17, live docs) for the ones with
+# a plain `mycase_field` - POST/PUT /cases: name, case_number, opened_date,
+# closed_date, practice_area, case_stage, description, sol_date, status.
+#
+# "Conflict Check"/"Conflict Check Notes" are NOT in MyCase's confirmed
+# standard Case schema - moved to CUSTOM_FIELDS below (they must be
+# MyCase custom fields, which also matches the firm's own uncertainty
+# about their type).
 STANDARD_FIELDS: list[FieldMapping] = [
-    FieldMapping("Name", "case_name", FieldKind.STANDARD, "title", SourceOfTruth.MYCASE,
+    FieldMapping("Name", "name", FieldKind.STANDARD, "title", SourceOfTruth.MYCASE,
                  "Use the complete MyCase case name. Do not substitute only the beneficiary's name."),
     FieldMapping("Case Number", "case_number", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
                  "Preserve the exact value, including leading zeros."),
-    FieldMapping("Contacts", "contacts", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Display all linked MyCase contact names. Never create/replace contacts by name alone."),
-    FieldMapping("Date Opened", "date_opened", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date Opened", "opened_date", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
                  "Copy the source date without timezone-related day shifts."),
-    FieldMapping("Date Closed", "date_closed", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date Closed", "closed_date", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
                  "Leave blank when no date exists."),
     FieldMapping("Practice Area", "practice_area", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Open question: should this become a Select field?"),
-    # NOTE: the firm's doc describes this as a Notion "Status" type, but the
-    # live database has it as "select" - built against what's actually live.
+                 "Must match a practice area name already configured in MyCase - a non-matching value defaults to blank."),
     FieldMapping("Case Stage", "case_stage", FieldKind.STANDARD, "select", SourceOfTruth.MYCASE,
-                 "Match the complete MyCase stage list and spelling; verify Notion's Select options cover all of them."),
-    FieldMapping("Office", "office", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("Lead attorney", "lead_attorney", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Display only - no write-back (would need MyCase user ID resolution)."),
-    FieldMapping("Originating attorney", "originating_attorney", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Display only - no write-back."),
-    # Real Notion "people" property - resolved by email via
-    # app/notion_users.py, never guessed from a name. Staff with no email
-    # from MyCase, or no matching Notion account, are skipped and logged
-    # rather than written incorrectly.
-    FieldMapping("Staff", "staff", FieldKind.STANDARD, "people", SourceOfTruth.MYCASE,
-                 "Multiple staff members supported. Matched to Notion users by email only."),
-    FieldMapping("Created", "created_info", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "MyCase's own creation date/creator as data - not Notion's system creation metadata."),
+                 "Must match a stage name already configured in MyCase - a non-matching value defaults to blank."),
     FieldMapping("Description", "description", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
                  "Preserve line breaks and supported formatting."),
-    FieldMapping("Conflict Check", "conflict_check", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Open question: confirm MyCase's real type (Text/Select/Checkbox) before relying on this."),
-    FieldMapping("Conflict Check Notes", "conflict_check_notes", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Preserve line breaks."),
+
+    # --- Derived fields: NOT a simple case[key] lookup, see sync_engine.py ---
+    FieldMapping("Contacts", "clients", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+                 "Display all linked MyCase contact names. Never create/replace contacts by name alone.",
+                 derived="clients_display"),
+    FieldMapping("Office", "office", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+                 "Confirmed read-only via this API - office isn't a settable field on case create/update.",
+                 derived="office_name"),
+    FieldMapping("Lead attorney", "staff", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+                 "Display only - derived from staff[].lead_lawyer. Needs the MyCase staff directory "
+                 "(name/email per staff ID) to resolve a human-readable name - see mycase_client.get_staff_directory.",
+                 derived="staff_lead_attorney"),
+    FieldMapping("Originating attorney", "staff", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+                 "Display only - derived from staff[].originating_lawyer, same dependency as Lead attorney.",
+                 derived="staff_originating_attorney"),
+    # Real Notion "people" property - resolved MyCase staff ID -> email
+    # (via the staff directory) -> Notion user ID (via notion_users.py),
+    # never guessed from a name. Any staff member that can't be resolved
+    # at either step is skipped and logged, not written incorrectly.
+    FieldMapping("Staff", "staff", FieldKind.STANDARD, "people", SourceOfTruth.MYCASE,
+                 "Multiple staff members supported. Matched to Notion users by email only.",
+                 derived="staff_people"),
+    FieldMapping("Created", "created_at", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+                 "MyCase's case creation timestamp - the confirmed schema has no separate 'creator' person field."),
 ]
 
 # =====================================================================
 # Custom Fields  ->  MyCase custom_field_values
 # =====================================================================
 CUSTOM_FIELDS: list[FieldMapping] = [
+    # Not in MyCase's confirmed standard Case schema - must be custom
+    # fields (also matches the firm's own uncertainty about their type).
+    FieldMapping("Conflict Check", "Conflict Check", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+                 "Confirm MyCase's real field_type (text/select/checkbox) once visible in GET /custom_fields."),
+    FieldMapping("Conflict Check Notes", "Conflict Check Notes", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+                 "Preserve line breaks."),
     FieldMapping("Email", "Email", FieldKind.CUSTOM, "email", SourceOfTruth.MYCASE,
                  "The case-level custom Email field, not a contact's email."),
     FieldMapping("Phone", "Phone", FieldKind.CUSTOM, "phone_number", SourceOfTruth.MYCASE,
@@ -148,8 +171,14 @@ CUSTOM_FIELDS: list[FieldMapping] = [
                  "Open question: confirm dropdown options if applicable."),
     FieldMapping("Case Manager", "Case Manager", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
                  "Display only - no write-back (would need MyCase user ID resolution)."),
+    # OPEN QUESTION: MyCase's confirmed built-in `status` field is only
+    # ever "open" or "closed" - if the firm's "Main Status" needs more
+    # options than that (their own note implies it does), it's genuinely
+    # a separate custom field, as mapped here. If it turns out "Main
+    # Status" actually means the built-in open/closed status, this
+    # should move to STANDARD_FIELDS as mycase_field="status" instead.
     FieldMapping("Main Status", "Main Status", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
-                 "Separate concept from Case Stage. Open question: confirm the complete MyCase status options."),
+                 "Separate concept from Case Stage. Open question: confirm against MyCase's built-in open/closed status."),
 ]
 
 ALL_FIELDS: list[FieldMapping] = STANDARD_FIELDS + CUSTOM_FIELDS
@@ -162,15 +191,16 @@ MATTER_ID_PROPERTY_TYPE = "url"
 
 # --- Deliberately excluded from sync, with reasons (nothing silently dropped) ---
 #
-# "Staff" is now wired up (see app/notion_users.py) - matched to Notion
-# users by email, never by guessing names. One real dependency remains:
-# this only works once MyCase's API is confirmed to actually include an
-# email per staff member (see mycase_client.py). If it turns out MyCase
-# only gives names, per-person matching isn't safely possible and the
-# firm's own documented fallback applies instead: convert "Staff" from a
-# Person property to a Text property in Notion, and sync it as a plain
-# display string of names (one-line change in notion_type + the
-# resolver is skipped entirely for a Text-typed Staff).
+# "Staff" / "Lead attorney" / "Originating attorney" are wired up (see the
+# `derived=` fields above and sync_engine.py) but depend on ONE remaining
+# piece: a MyCase "staff directory" endpoint to resolve a staff ID to a
+# name/email (confirmed: a case's staff[] array only ever gives IDs, never
+# names). Until that endpoint is confirmed (see mycase_client.get_staff_directory),
+# these three fields will sync with staff IDs resolved to nothing - logged
+# clearly, not silently wrong. If MyCase turns out not to expose staff
+# emails at all even via that directory, the firm's own documented
+# fallback applies: convert "Staff" from a Person property to Text in
+# Notion and sync it as a plain display string instead.
 
 # Notion property type -> best-fit MyCase custom field type, used only when
 # auto-creating a MyCase custom field for a brand-new, unmapped Notion

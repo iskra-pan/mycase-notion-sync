@@ -44,6 +44,65 @@ logger = logging.getLogger("sync_engine")
 _MAPPED_NOTION_PROPERTIES = {f.notion_property for f in ALL_FIELDS}
 
 
+def _build_custom_field_values(values_by_field: dict) -> list:
+    """`values_by_field`: {FieldMapping (kind=CUSTOM): plain_value}.
+    Resolves each field's name to its MyCase numeric ID and builds the
+    confirmed request shape: [{"custom_field": {"id": N}, "value": v}, ...].
+    Fields with no matching MyCase custom field are skipped (logged
+    inside resolve_custom_field_id) rather than failing the whole sync."""
+    result = []
+    for f, value in values_by_field.items():
+        field_id = mycase_client.resolve_custom_field_id(f.mycase_field)
+        if field_id is not None:
+            result.append({"custom_field": {"id": field_id}, "value": value})
+    return result
+
+
+def _get_custom_field_value(matter: dict, field_name: str):
+    """Reads one custom field's value back out of a case's
+    `custom_field_values` array (matched by resolved ID - MyCase returns
+    only `{"id": N}` under `custom_field` by default, never the name)."""
+    field_id = mycase_client.resolve_custom_field_id(field_name)
+    if field_id is None:
+        return None
+    for entry in matter.get("custom_field_values") or []:
+        if (entry.get("custom_field") or {}).get("id") == field_id:
+            return entry.get("value")
+    return None
+
+
+def _derive_mycase_value(f, matter: dict):
+    """Handles the 5 STANDARD fields that aren't a plain `matter[key]`
+    lookup (see the `derived=` note on each in field_mapping.py). All are
+    MyCase -> Notion read-only by design - none of these are ever pushed
+    from Notion back to MyCase."""
+    if f.derived == "clients_display":
+        clients = matter.get("clients") or []
+        names = [f"{c.get('first_name', '')} {c.get('last_name', '')}".strip() for c in clients]
+        return ", ".join(n for n in names if n) or None
+
+    if f.derived == "office_name":
+        return (matter.get("office") or {}).get("name")
+
+    if f.derived in ("staff_lead_attorney", "staff_originating_attorney"):
+        flag = "lead_lawyer" if f.derived == "staff_lead_attorney" else "originating_lawyer"
+        staff_ids = [s["id"] for s in (matter.get("staff") or []) if s.get(flag) and s.get("id") is not None]
+        directory = mycase_client.get_staff_directory()
+        names = [directory[sid]["name"] for sid in staff_ids if sid in directory and directory[sid].get("name")]
+        if staff_ids and not names:
+            logger.warning(
+                "Could not resolve name(s) for %s staff ID(s) %s on case %s - staff directory "
+                "endpoint may still be unconfirmed.", f.derived, staff_ids, matter.get("id"),
+            )
+        return ", ".join(names) or None
+
+    if f.derived == "staff_people":
+        staff_ids = [s["id"] for s in (matter.get("staff") or []) if s.get("id") is not None]
+        return notion_users.resolve_staff_ids_to_notion_people(staff_ids)
+
+    raise ValueError(f"Unknown derived field marker: {f.derived!r}")
+
+
 def sync_new_and_changed_notion_pages() -> dict:
     """Poll Notion for pages created/edited since the last run; create or
     update the matching MyCase matter for each."""
@@ -85,14 +144,15 @@ def _sync_one_notion_page(page: dict) -> str:
 
 
 def _create_mycase_matter_for_page(page_id: str, notion_edited_at: str, plain_values: dict) -> str:
-    standard_fields = {f.mycase_field: plain_values[f] for f in STANDARD_FIELDS}
-    matter = mycase_client.create_matter(standard_fields)
-    # TODO CONFIRM: the real key for the new matter's ID in MyCase's response.
-    matter_id = str(matter.get("id") or matter.get("case", {}).get("id"))
-
-    for f in CUSTOM_FIELDS:
-        if plain_values[f] is not None:
-            mycase_client.set_custom_field_value(matter_id, f.mycase_field, plain_values[f])
+    # Derived fields (Contacts, Office, Lead/Originating attorney, Staff)
+    # are MyCase -> Notion read-only - never sent on create either, since
+    # none of them are plain writable keys (see field_mapping.py notes).
+    standard_fields = {f.mycase_field: plain_values[f] for f in STANDARD_FIELDS if not f.derived}
+    custom_field_values = _build_custom_field_values(
+        {f: plain_values[f] for f in CUSTOM_FIELDS if plain_values[f] is not None}
+    )
+    matter = mycase_client.create_matter(standard_fields, custom_field_values)
+    matter_id = str(matter["id"])
 
     save_case_mapping(page_id, matter_id, {
         "notion_edited_at": notion_edited_at,
@@ -121,6 +181,8 @@ def _push_notion_changes_to_mycase(mapping: dict, notion_edited_at: str, plain_v
 
     to_push = {}
     for f in ALL_FIELDS:
+        if f.derived:
+            continue  # read-only by design - see field_mapping.py
         if f.source_of_truth == SourceOfTruth.MYCASE:
             continue
         if (
@@ -132,12 +194,11 @@ def _push_notion_changes_to_mycase(mapping: dict, notion_edited_at: str, plain_v
         to_push[f] = plain_values[f]
 
     standard_updates = {f.mycase_field: v for f, v in to_push.items() if f.kind == FieldKind.STANDARD}
-    if standard_updates:
-        mycase_client.update_matter(matter_id, standard_updates)
-
-    for f, v in to_push.items():
-        if f.kind == FieldKind.CUSTOM and v is not None:
-            mycase_client.set_custom_field_value(matter_id, f.mycase_field, v)
+    custom_field_values = _build_custom_field_values(
+        {f: v for f, v in to_push.items() if f.kind == FieldKind.CUSTOM and v is not None}
+    )
+    if standard_updates or custom_field_values:
+        mycase_client.update_matter(matter_id, standard_updates, custom_field_values)
 
     save_case_mapping(mapping["notion_page_id"], matter_id, {
         "notion_edited_at": notion_edited_at,
@@ -154,7 +215,6 @@ def sync_changed_mycase_matters() -> dict:
     matters = mycase_client.list_matters()
     updated = 0
     for m in matters:
-        # TODO CONFIRM: real key names for matter id / updated-at timestamp.
         matter_id = str(m["id"])
         mycase_edited_at = m.get("updated_at")
 
@@ -168,13 +228,12 @@ def sync_changed_mycase_matters() -> dict:
         for f in ALL_FIELDS:
             if f.source_of_truth == SourceOfTruth.NOTION:
                 continue
-            value = m.get(f.mycase_field)
-            if f.notion_type == "people":
-                # Special case: MyCase gives names/emails, Notion needs
-                # real user IDs - resolve by email first (see
-                # notion_users.py), never write raw names into a people
-                # property.
-                value = notion_users.resolve_staff_to_notion_people(value)
+            if f.derived:
+                value = _derive_mycase_value(f, m)
+            elif f.kind == FieldKind.CUSTOM:
+                value = _get_custom_field_value(m, f.mycase_field)
+            else:
+                value = m.get(f.mycase_field)
             try:
                 notion_updates[f.notion_property] = plain_to_notion_value(f.notion_type, value)
             except ValueError:

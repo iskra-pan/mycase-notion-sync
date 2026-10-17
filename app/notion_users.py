@@ -6,10 +6,12 @@ Matches by email ONLY, per the firm's own requirement: "do not guess
 ambiguous name matches." Anyone without an email, or without a matching
 Notion workspace account, is skipped and logged - never guessed.
 
-TODO CONFIRM: this assumes MyCase's staff data includes an email per
-person, e.g. [{"name": ..., "email": ...}, ...]. Adjust
-resolve_staff_to_notion_people() once MyCase's real schema is confirmed -
-if MyCase turns out not to expose staff emails at all, real per-person
+Confirmed (2026-10-17): a MyCase case's `staff` array only ever gives
+{id, lead_lawyer, originating_lawyer, ...} - never a name or email. So
+resolving a staff ID to a Notion user is two hops: MyCase staff ID ->
+email (via mycase_client.get_staff_directory - itself still a TODO
+CONFIRM endpoint) -> Notion user ID (via the cache below). If the staff
+directory endpoint turns out not to expose emails at all, real per-person
 matching isn't possible and "Staff" should be converted to a Notion Text
 property instead (synced as a plain display string), per the firm's own
 documented fallback.
@@ -18,7 +20,7 @@ import logging
 import time
 from typing import Optional
 
-from app import notion_client
+from app import mycase_client, notion_client
 
 logger = logging.getLogger("notion_users")
 
@@ -49,29 +51,34 @@ def get_notion_user_id_by_email(email: str) -> Optional[str]:
     return _cache.get(email.strip().lower())
 
 
-def resolve_staff_to_notion_people(mycase_staff: list) -> list[str]:
-    """`mycase_staff`: whatever MyCase's API returns for a case's staff
-    list - TODO CONFIRM the real shape; assumed to be a list of
-    {"name": ..., "email": ...} dicts for now.
+def resolve_staff_ids_to_notion_people(mycase_staff_ids: list) -> list[str]:
+    """`mycase_staff_ids`: raw MyCase staff IDs, e.g. the `id`s from a
+    case's confirmed `staff: [{id, lead_lawyer, originating_lawyer}, ...]`
+    array.
 
-    Returns Notion user IDs for staff matched confidently by email.
-    Everyone else is skipped and logged - never guessed by name alone.
+    Two-hop resolution: staff ID -> {name, email} via the MyCase staff
+    directory, then email -> Notion user ID. Anyone who fails either hop
+    (no directory entry, no email, no matching Notion account) is skipped
+    and logged - never guessed by name alone.
     """
-    if not mycase_staff:
+    if not mycase_staff_ids:
         return []
 
+    directory = mycase_client.get_staff_directory()
     ids = []
-    for person in mycase_staff:
-        if not isinstance(person, dict):
-            logger.warning("Unexpected MyCase staff entry shape (not a dict): %r - skipped.", person)
-            continue
-        name = person.get("name", "<unknown>")
-        email = person.get("email")
-        if not email:
+    for staff_id in mycase_staff_ids:
+        entry = directory.get(staff_id)
+        if not entry:
             logger.warning(
-                "MyCase staff member '%s' has no email in the API response - skipped "
-                "(can't safely match to a Notion user without one).", name,
+                "MyCase staff ID %s not found in the staff directory - skipped "
+                "(directory endpoint may still be unconfirmed - see mycase_client.get_staff_directory).",
+                staff_id,
             )
+            continue
+        email = entry.get("email")
+        name = entry.get("name", "<unknown>")
+        if not email:
+            logger.warning("MyCase staff member '%s' (id=%s) has no email - skipped.", name, staff_id)
             continue
         notion_id = get_notion_user_id_by_email(email)
         if notion_id:
