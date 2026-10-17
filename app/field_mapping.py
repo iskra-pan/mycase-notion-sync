@@ -86,8 +86,8 @@ STANDARD_FIELDS: list[FieldMapping] = [
                  "Confirmed read-only via this API - office isn't a settable field on case create/update.",
                  derived="office_name"),
     FieldMapping("Lead attorney", "staff", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
-                 "Display only - derived from staff[].lead_lawyer. Needs the MyCase staff directory "
-                 "(name/email per staff ID) to resolve a human-readable name - see mycase_client.get_staff_directory.",
+                 "Display only - derived from staff[].lead_lawyer, resolved to a name via "
+                 "mycase_client.get_staff_directory (GET /v1/staff).",
                  derived="staff_lead_attorney"),
     FieldMapping("Originating attorney", "staff", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
                  "Display only - derived from staff[].originating_lawyer, same dependency as Lead attorney.",
@@ -189,18 +189,15 @@ ALL_FIELDS: list[FieldMapping] = STANDARD_FIELDS + CUSTOM_FIELDS
 MATTER_ID_PROPERTY = "MyCase Link"
 MATTER_ID_PROPERTY_TYPE = "url"
 
-# --- Deliberately excluded from sync, with reasons (nothing silently dropped) ---
+# --- Nothing currently excluded ---
 #
-# "Staff" / "Lead attorney" / "Originating attorney" are wired up (see the
-# `derived=` fields above and sync_engine.py) but depend on ONE remaining
-# piece: a MyCase "staff directory" endpoint to resolve a staff ID to a
-# name/email (confirmed: a case's staff[] array only ever gives IDs, never
-# names). Until that endpoint is confirmed (see mycase_client.get_staff_directory),
-# these three fields will sync with staff IDs resolved to nothing - logged
-# clearly, not silently wrong. If MyCase turns out not to expose staff
-# emails at all even via that directory, the firm's own documented
-# fallback applies: convert "Staff" from a Person property to Text in
-# Notion and sync it as a plain display string instead.
+# "Staff" / "Lead attorney" / "Originating attorney" are fully wired up
+# (see the `derived=` fields above, sync_engine.py, and
+# mycase_client.get_staff_directory / notion_users.py) - a case's staff[]
+# array gives IDs, GET /v1/staff resolves each to a name + email, and
+# notion_users.py matches that email to a Notion workspace user. Anyone
+# who fails any step (no directory entry, no email, no Notion account) is
+# skipped and logged, never guessed.
 
 # Notion property type -> best-fit MyCase custom field type, used only when
 # auto-creating a MyCase custom field for a brand-new, unmapped Notion

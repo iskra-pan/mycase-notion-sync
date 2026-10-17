@@ -91,8 +91,8 @@ def _derive_mycase_value(f, matter: dict):
         names = [directory[sid]["name"] for sid in staff_ids if sid in directory and directory[sid].get("name")]
         if staff_ids and not names:
             logger.warning(
-                "Could not resolve name(s) for %s staff ID(s) %s on case %s - staff directory "
-                "endpoint may still be unconfirmed.", f.derived, staff_ids, matter.get("id"),
+                "Could not resolve name(s) for %s staff ID(s) %s on case %s - check they still "
+                "exist in MyCase's staff directory.", f.derived, staff_ids, matter.get("id"),
             )
         return ", ".join(names) or None
 

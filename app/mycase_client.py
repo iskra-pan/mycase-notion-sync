@@ -1,19 +1,18 @@
 """
-MyCase data-API client - cases and custom fields.
+MyCase data-API client - cases, custom fields, and staff.
 
 Confirmed against the firm's live Stoplight docs (2026-10-17): base URL,
-create/update request+response shapes, and the custom_field_values array
-structure are real, not guessed. Two things remain genuinely unconfirmed
-(flagged inline as `# TODO CONFIRM`):
-  1. The exact path/shape for listing & creating Custom Field definitions
-     (needed to resolve a field's *name* to the numeric ID the API wants).
-  2. A "staff directory" endpoint to resolve a MyCase staff ID to a name/
-     email - the Cases API only ever gives staff IDs + lead/originating
-     booleans, never a name. Needed to finish the Staff -> Notion mapping
-     in notion_users.py.
+Cases create/update/list, Custom Fields list/create, and the Staff
+directory are all real, not guessed - including the flat (not
+case-wrapped) request bodies, the custom_field_values array structure,
+and cursor-based list pagination via page_size/page_token.
 
-Everything else below is real: POST/PUT /cases, the flat (not
-case-wrapped) request body, and GET's response shape.
+One thing remains an assumption rather than a confirmed fact: the exact
+`field_type` string values MyCase's Custom Fields API accepts when
+*creating* a field (text_short/text_long/number/checkbox/date/currency,
+per MyCase's help-center article - auto-creation in
+sync_new_notion_properties_to_mycase is the only code path that depends
+on this; reading/writing values on already-existing custom fields doesn't).
 """
 import logging
 from typing import Optional
@@ -41,15 +40,19 @@ def _require_api_base() -> None:
         raise RuntimeError("MYCASE_API_BASE is not set - see app/config.py.")
 
 
-def list_matters(page: int = 1) -> list[dict]:
-    """TODO CONFIRM: pagination params and envelope shape for GET /cases
-    (the individual case shape itself IS confirmed - see get_matter)."""
+def list_matters() -> list[dict]:
+    """Confirmed: GET /cases returns a plain array (same convention as
+    /custom_fields and /staff), paginated via a `page_token` query param +
+    cursor (max page_size 1000, default 25).
+
+    Not yet implementing full cursor pagination - requesting page_size=1000
+    in one call covers any realistically-sized firm's open case count.
+    Revisit (loop on page_token) if the firm ever has 1000+ cases."""
     _require_api_base()
     with httpx.Client(timeout=20) as client:
-        resp = client.get(f"{API_BASE}/cases", headers=_headers(), params={"page": page})
+        resp = client.get(f"{API_BASE}/cases", headers=_headers(), params={"page_size": 1000})
         resp.raise_for_status()
-        body = resp.json()
-    return body.get("cases", body if isinstance(body, list) else [])
+        return resp.json()
 
 
 def get_matter(matter_id: str) -> dict:
@@ -151,34 +154,26 @@ def create_custom_field(name: str, field_type: str) -> dict:
 
 # --- Staff directory -----------------------------------------------------
 #
-# TODO CONFIRM: real endpoint. A case's `staff` array only ever gives
-# {id, lead_lawyer, originating_lawyer, case_rate, rate_type} - never a
-# name or email - so resolving a staff ID to something matchable against
-# a Notion user (see notion_users.py) needs a separate "firm users" or
-# "staff" listing endpoint. Not yet seen in the docs - screenshot
-# whatever lists firm staff members (likely under a "Staff"/"Users"
-# section) the same way Cases was done.
+# Confirmed (2026-10-17): GET https://external-integrations.mycase.com/v1/staff
+# returns a plain array of {id, email, first_name, middle_initial,
+# last_name, type, title, active, ...}. This closes the loop for
+# Staff/Lead attorney/Originating attorney - a case's staff[] only ever
+# gives IDs, this directory resolves each ID to a real name + email.
 
 _staff_directory_cache: dict[int, dict] = {}  # staff id -> {"name":..., "email":...}
 
 
 def get_staff_directory() -> dict[int, dict]:
-    """TODO CONFIRM path + shape entirely - placeholder until the real
-    endpoint is confirmed. Returning {} means Staff/Lead attorney/
-    Originating attorney show up with no name until this is wired up -
-    logged clearly in sync_engine rather than failing silently."""
+    """Cached for the life of the process - staff rosters change rarely.
+    Restart the service (or redeploy) to pick up new/changed staff."""
     _require_api_base()
     if _staff_directory_cache:
         return _staff_directory_cache
-    try:
-        with httpx.Client(timeout=20) as client:
-            resp = client.get(f"{API_BASE}/staff", headers=_headers())
-            resp.raise_for_status()
-            body = resp.json()
-        entries = body.get("staff", body if isinstance(body, list) else [])
-        for s in entries:
+    with httpx.Client(timeout=20) as client:
+        resp = client.get(f"{API_BASE}/staff", headers=_headers(), params={"page_size": 1000})
+        resp.raise_for_status()
+        for s in resp.json():
             if s.get("id") is not None:
-                _staff_directory_cache[s["id"]] = {"name": s.get("name"), "email": s.get("email")}
-    except httpx.HTTPStatusError as exc:
-        logger.error("Could not load MyCase staff directory (endpoint unconfirmed): %s", exc)
+                name = " ".join(filter(None, [s.get("first_name"), s.get("last_name")])) or None
+                _staff_directory_cache[s["id"]] = {"name": name, "email": s.get("email")}
     return _staff_directory_cache

@@ -9,12 +9,10 @@ Notion workspace account, is skipped and logged - never guessed.
 Confirmed (2026-10-17): a MyCase case's `staff` array only ever gives
 {id, lead_lawyer, originating_lawyer, ...} - never a name or email. So
 resolving a staff ID to a Notion user is two hops: MyCase staff ID ->
-email (via mycase_client.get_staff_directory - itself still a TODO
-CONFIRM endpoint) -> Notion user ID (via the cache below). If the staff
-directory endpoint turns out not to expose emails at all, real per-person
-matching isn't possible and "Staff" should be converted to a Notion Text
-property instead (synced as a plain display string), per the firm's own
-documented fallback.
+email (via mycase_client.get_staff_directory - GET /v1/staff, confirmed
+real) -> Notion user ID (via the cache below). A staff member with no
+email on file in MyCase, or no matching Notion workspace account, is
+skipped and logged - never guessed.
 """
 import logging
 import time
