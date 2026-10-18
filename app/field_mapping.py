@@ -6,13 +6,16 @@ and the firm's own MyCase field inventory.
 Edit THIS file (not the sync engine) whenever the firm wants to add or
 remove a synced field - nothing syncs unless it has a row here.
 
-Almost every field below defaults to source_of_truth=MYCASE, per the
-firm's own field descriptions ("mirror MyCase's value", "display the
-MyCase X"). Practical effect: a brand-new Notion page still creates the
-MyCase matter using whatever is typed in Notion at creation time, but
-*after* that, edits to these fields in Notion do NOT push back to
-MyCase - only MyCase -> Notion flows. If that's not the intended
-workflow for some of these fields, change their source_of_truth.
+Notion is the source of truth for every field except 6: Contacts, Office,
+Lead attorney, Originating attorney, Staff, and Created. Those 6 stay
+MyCase-sourced because they aren't plain writable values - 5 are derived
+from relational MyCase data with no reverse (Notion -> MyCase) mapping
+built yet (Office specifically isn't writable via this API at all,
+regardless of source_of_truth), and Created is MyCase's own case-creation
+timestamp. For everything else: editing it in Notion overwrites MyCase on
+the next sync; editing it in MyCase gets overwritten back by Notion's
+value on the next sync. Change source_of_truth per-field if a different
+mix is wanted later.
 
 `mycase_field` values for STANDARD_FIELDS are confirmed real MyCase Case
 API keys (2026-10-17, against the firm's live docs) - see
@@ -63,19 +66,19 @@ class FieldMapping:
 # MyCase custom fields, which also matches the firm's own uncertainty
 # about their type).
 STANDARD_FIELDS: list[FieldMapping] = [
-    FieldMapping("Name", "name", FieldKind.STANDARD, "title", SourceOfTruth.MYCASE,
+    FieldMapping("Name", "name", FieldKind.STANDARD, "title", SourceOfTruth.NOTION,
                  "Use the complete MyCase case name. Do not substitute only the beneficiary's name."),
-    FieldMapping("Case Number", "case_number", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Case Number", "case_number", FieldKind.STANDARD, "rich_text", SourceOfTruth.NOTION,
                  "Preserve the exact value, including leading zeros."),
-    FieldMapping("Date Opened", "opened_date", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date Opened", "opened_date", FieldKind.STANDARD, "date", SourceOfTruth.NOTION,
                  "Copy the source date without timezone-related day shifts."),
-    FieldMapping("Date Closed", "closed_date", FieldKind.STANDARD, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date Closed", "closed_date", FieldKind.STANDARD, "date", SourceOfTruth.NOTION,
                  "Leave blank when no date exists."),
-    FieldMapping("Practice Area", "practice_area", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Practice Area", "practice_area", FieldKind.STANDARD, "rich_text", SourceOfTruth.NOTION,
                  "Must match a practice area name already configured in MyCase - a non-matching value defaults to blank."),
-    FieldMapping("Case Stage", "case_stage", FieldKind.STANDARD, "select", SourceOfTruth.MYCASE,
+    FieldMapping("Case Stage", "case_stage", FieldKind.STANDARD, "select", SourceOfTruth.NOTION,
                  "Must match a stage name already configured in MyCase - a non-matching value defaults to blank."),
-    FieldMapping("Description", "description", FieldKind.STANDARD, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Description", "description", FieldKind.STANDARD, "rich_text", SourceOfTruth.NOTION,
                  "Preserve line breaks and supported formatting."),
 
     # --- Derived fields: NOT a simple case[key] lookup, see sync_engine.py ---
@@ -109,75 +112,81 @@ STANDARD_FIELDS: list[FieldMapping] = [
 CUSTOM_FIELDS: list[FieldMapping] = [
     # Not in MyCase's confirmed standard Case schema - must be custom
     # fields (also matches the firm's own uncertainty about their type).
-    FieldMapping("Conflict Check", "Conflict Check", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Conflict Check", "Conflict Check", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Confirm MyCase's real field_type (text/select/checkbox) once visible in GET /custom_fields."),
-    FieldMapping("Conflict Check Notes", "Conflict Check Notes", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Conflict Check Notes", "Conflict Check Notes", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Preserve line breaks."),
-    FieldMapping("Email", "Email", FieldKind.CUSTOM, "email", SourceOfTruth.MYCASE,
+    FieldMapping("Email", "Email", FieldKind.CUSTOM, "email", SourceOfTruth.NOTION,
                  "The case-level custom Email field, not a contact's email."),
-    FieldMapping("Phone", "Phone", FieldKind.CUSTOM, "phone_number", SourceOfTruth.MYCASE,
+    FieldMapping("Phone", "Phone", FieldKind.CUSTOM, "phone_number", SourceOfTruth.NOTION,
                  "Preserve country code, extension, and exact source formatting."),
-    FieldMapping("Date Added", "Date Added", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date Added", "Date Added", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION,
                  "Keep separate from Date Opened and Created."),
-    FieldMapping("Lead Type", "Lead Type", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Lead Type", "Lead Type", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Open question: confirm source type and full option list if it's a dropdown."),
-    FieldMapping("Lead Source", "Lead Source", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Lead Source", "Lead Source", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Open question: confirm dropdown options if applicable."),
-    FieldMapping("Case Type", "Case Type", FieldKind.CUSTOM, "select", SourceOfTruth.MYCASE,
+    FieldMapping("Case Type", "Case Type", FieldKind.CUSTOM, "select", SourceOfTruth.NOTION,
                  "Notion's current Select options are not a verified complete list of MyCase's options."),
-    FieldMapping("G-Drive link", "G-Drive link", FieldKind.CUSTOM, "url", SourceOfTruth.MYCASE,
+    FieldMapping("G-Drive link", "G-Drive link", FieldKind.CUSTOM, "url", SourceOfTruth.NOTION,
                  "Likely superseded once the separate Google Drive folder automation is built."),
-    FieldMapping("USCIS Receipt Number - 1", "USCIS Receipt Number - 1", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("USCIS Receipt Number - 1", "USCIS Receipt Number - 1", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Keep separate from receipt number 2."),
-    FieldMapping("USCIS Receipt Number - 2", "USCIS Receipt Number - 2", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("USCIS Receipt Number - 2", "USCIS Receipt Number - 2", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Keep separate from receipt number 1."),
 
     # Filing/expense slots 1-4. NOTE: slot 2's "Type of Filing" has a
     # capital F (unlike slots 1/3/4's "Type of filing") - this is the
     # firm's real property name, not a typo - preserved exactly.
-    FieldMapping("1 Filing — Type of filing", "1 Filing — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("1 Filing — Date", "1 Filing — Date", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE, ""),
-    FieldMapping("1 Filing — Card", "1 Filing — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("1 Filing — Type of filing", "1 Filing — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION, ""),
+    FieldMapping("1 Filing — Date", "1 Filing — Date", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION, ""),
+    FieldMapping("1 Filing — Card", "1 Filing — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Card label/reference only - never full card numbers or security codes."),
-    FieldMapping("1 Filing — Amount", "1 Filing — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.MYCASE,
+    FieldMapping("1 Filing — Amount", "1 Filing — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.NOTION,
                  "Open question: confirm currency and decimal precision."),
 
-    FieldMapping("2 Filing — Type of Filing", "2 Filing — Type of Filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("2 Filing — Date", "2 Filing — Date", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE, ""),
-    FieldMapping("2 Filing — Amount", "2 Filing — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.MYCASE, ""),
-    FieldMapping("2 Filing — Card", "2 Filing — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("2 Filing — Type of Filing", "2 Filing — Type of Filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION, ""),
+    FieldMapping("2 Filing — Date", "2 Filing — Date", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION, ""),
+    FieldMapping("2 Filing — Amount", "2 Filing — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.NOTION, ""),
+    FieldMapping("2 Filing — Card", "2 Filing — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Card label/reference only."),
 
-    FieldMapping("3 Filing/Expenses — Type of filing", "3 Filing/Expenses — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("3 Filing/Expenses — Date", "3 Filing/Expenses — Date", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE, ""),
-    FieldMapping("3 Filing/Expenses — Amount", "3 Filing/Expenses — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.MYCASE, ""),
-    FieldMapping("3 Filing/Expenses — Card", "3 Filing/Expenses — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("3 Filing/Expenses — Type of filing", "3 Filing/Expenses — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION, ""),
+    FieldMapping("3 Filing/Expenses — Date", "3 Filing/Expenses — Date", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION, ""),
+    FieldMapping("3 Filing/Expenses — Amount", "3 Filing/Expenses — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.NOTION, ""),
+    FieldMapping("3 Filing/Expenses — Card", "3 Filing/Expenses — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Card label/reference only."),
 
-    FieldMapping("4 Filing/Expenses — Type of filing", "4 Filing/Expenses — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("4 Filing/Expenses — Date", "4 Filing/Expenses — Date", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE, ""),
-    FieldMapping("4 Filing/Expenses — Amount", "4 Filing/Expenses — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.MYCASE, ""),
-    FieldMapping("4 Filing/Expenses — Card", "4 Filing/Expenses — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("4 Filing/Expenses — Type of filing", "4 Filing/Expenses — Type of filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION, ""),
+    FieldMapping("4 Filing/Expenses — Date", "4 Filing/Expenses — Date", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION, ""),
+    FieldMapping("4 Filing/Expenses — Amount", "4 Filing/Expenses — Amount", FieldKind.CUSTOM, "number", SourceOfTruth.NOTION, ""),
+    FieldMapping("4 Filing/Expenses — Card", "4 Filing/Expenses — Card", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Card label/reference only."),
 
-    FieldMapping("Filing notes", "Filing notes", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE, ""),
-    FieldMapping("Billing transferred", "Billing transferred", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Filing notes", "Filing notes", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION, ""),
+    FieldMapping("Billing transferred", "Billing transferred", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Open question: confirm whether the MyCase source is actually a checkbox/date/dropdown/text."),
-    FieldMapping("Payment arrangements if any:", "Payment arrangements if any:", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Payment arrangements if any:", "Payment arrangements if any:", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Exact property name includes the trailing colon."),
-    FieldMapping("Date — Requested to Close", "Date — Requested to Close", FieldKind.CUSTOM, "date", SourceOfTruth.MYCASE,
+    FieldMapping("Date — Requested to Close", "Date — Requested to Close", FieldKind.CUSTOM, "date", SourceOfTruth.NOTION,
                  "A closure *request* date - keep separate from the actual Date Closed."),
-    FieldMapping("Payment status for filing", "Payment status for filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Payment status for filing", "Payment status for filing", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Open question: confirm dropdown options if applicable."),
-    FieldMapping("Case Manager", "Case Manager", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
-                 "Display only - no write-back (would need MyCase user ID resolution)."),
+    # Unlike Lead/Originating attorney (confirmed relational - boolean
+    # flags on the staff[] array), "Case Manager" is a genuine MyCase
+    # custom field, so a plain text write-back works normally - no ID
+    # resolution needed here, assuming MyCase's field_type for it is a
+    # plain text type and not some staff-reference type (worth a glance
+    # at GET /custom_fields to confirm).
+    FieldMapping("Case Manager", "Case Manager", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
+                 "Display the MyCase case manager's name; confirm the field_type in GET /custom_fields."),
     # OPEN QUESTION: MyCase's confirmed built-in `status` field is only
     # ever "open" or "closed" - if the firm's "Main Status" needs more
     # options than that (their own note implies it does), it's genuinely
     # a separate custom field, as mapped here. If it turns out "Main
     # Status" actually means the built-in open/closed status, this
     # should move to STANDARD_FIELDS as mycase_field="status" instead.
-    FieldMapping("Main Status", "Main Status", FieldKind.CUSTOM, "rich_text", SourceOfTruth.MYCASE,
+    FieldMapping("Main Status", "Main Status", FieldKind.CUSTOM, "rich_text", SourceOfTruth.NOTION,
                  "Separate concept from Case Stage. Open question: confirm against MyCase's built-in open/closed status."),
 ]
 
